@@ -1,0 +1,8 @@
+[package]
+name = "shell-context-menu-gui"
+version = "0.1.0"
+edition = "2021"
+description = "GUI editor for Shell context-menu entries"
+
+[dependencies]
+eframe = "0.29"
