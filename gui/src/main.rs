@@ -1,5 +1,5 @@
 use eframe::egui;
-use std::{fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EntryKind { Item, Menu, Separator }
@@ -23,12 +23,12 @@ impl Entry {
 fn esc(value: &str) -> String { value.replace('\\', "\\\\").replace('\'', "\\'") }
 
 struct App {
-    entries: Vec<Entry>, selected: Option<usize>, file_path: String, status: String,
+    entries: Vec<Entry>, selected: Option<usize>, expanded: HashSet<usize>, file_path: String, status: String,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let mut app = Self { entries: Vec::new(), selected: None, file_path: "../src/bin/imports/gui.nss".into(), status: "Ready".into() };
+        let mut app = Self { entries: Vec::new(), selected: None, expanded: HashSet::new(), file_path: "../src/bin/imports/gui.nss".into(), status: "Ready".into() };
         app.load();
         app
     }
@@ -41,6 +41,7 @@ impl App {
         match fs::read_to_string(PathBuf::from(&self.file_path)) {
             Ok(contents) => {
                 self.entries = parse_nss(&contents);
+                self.expanded = self.entries.iter().enumerate().filter(|(_, entry)| entry.kind == EntryKind::Menu).map(|(i, _)| i).collect();
                 self.selected = if self.entries.is_empty() { None } else { Some(0) };
                 self.status = format!("Loaded {} entries", self.entries.len());
             }
@@ -74,17 +75,40 @@ impl eframe::App for App {
                 if ui.button("+ Separator").clicked() { self.entries.push(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true, depth: 0 }); self.selected = Some(self.entries.len()-1); } });
             ui.separator();
             let mut remove = None;
+            let mut toggle = None;
+            let mut hidden_depth = None;
             for (i, entry) in self.entries.iter().enumerate() {
+                if hidden_depth.is_some_and(|depth| entry.depth > depth) { continue; }
+                hidden_depth = None;
+
+                let selected = self.selected == Some(i);
+                let is_menu = entry.kind == EntryKind::Menu;
+                let is_expanded = self.expanded.contains(&i);
+                let marker = match entry.kind {
+                    EntryKind::Menu if is_expanded => "▾",
+                    EntryKind::Menu => "▸",
+                    EntryKind::Item => "•",
+                    EntryKind::Separator => "─",
+                };
+                let icon = if entry.icon.trim().is_empty() { "□" } else { "◆" };
+                let label = format!("{marker}  {icon}  {}", entry.label());
                 ui.horizontal(|ui| {
-                    ui.add_space(entry.depth as f32 * 18.0);
-                    let marker = match entry.kind { EntryKind::Menu => "▾", EntryKind::Item => "◻", EntryKind::Separator => "─" };
-                    let icon = if entry.icon.trim().is_empty() { "" } else { "  ◈" };
-                    let selected = self.selected == Some(i);
-                    if ui.selectable_label(selected, format!("{marker} {}{}", entry.label(), icon)).clicked() { self.selected = Some(i); }
+                    ui.add_space(entry.depth as f32 * 16.0);
+                    if is_menu && ui.small_button(marker).clicked() { toggle = Some(i); }
+                    else if !is_menu { ui.add_space(22.0); }
+                    if ui.selectable_label(selected, label).clicked() { self.selected = Some(i); }
                     if selected && ui.small_button("×").clicked() { remove = Some(i); }
                 });
+                if is_menu && !is_expanded { hidden_depth = Some(entry.depth); }
             }
-            if let Some(i) = remove { self.entries.remove(i); self.selected = self.entries.len().checked_sub(1); }
+            if let Some(i) = toggle {
+                if !self.expanded.insert(i) { self.expanded.remove(&i); }
+            }
+            if let Some(i) = remove {
+                self.entries.remove(i);
+                self.expanded = self.expanded.iter().filter_map(|&index| if index == i { None } else if index > i { Some(index - 1) } else { Some(index) }).collect();
+                self.selected = self.entries.len().checked_sub(1);
+            }
         });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0); ui.heading("Entry properties"); ui.add_space(12.0);
