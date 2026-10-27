@@ -5,7 +5,7 @@ use std::{fs, path::PathBuf};
 enum EntryKind { Item, Menu, Separator }
 
 #[derive(Clone)]
-struct Entry { kind: EntryKind, title: String, command: String, icon: String, enabled: bool }
+struct Entry { kind: EntryKind, title: String, command: String, icon: String, enabled: bool, depth: usize }
 
 impl Entry {
     fn label(&self) -> String {
@@ -15,7 +15,7 @@ impl Entry {
         match self.kind {
             EntryKind::Separator => format!("{indent}separator\n"),
             EntryKind::Item => format!("{indent}item(title = '{}' command = '{}' image = '{}' enabled = {})\n", esc(&self.title), esc(&self.command), esc(&self.icon), self.enabled as u8),
-            EntryKind::Menu => format!("{indent}menu(title = '{}' image = '{}') {{\n{indent}}}\n", esc(&self.title), esc(&self.icon)),
+            EntryKind::Menu => format!("{indent}menu(title = '{}' image = '{}') {{\n", esc(&self.title), esc(&self.icon)),
         }
     }
 }
@@ -49,7 +49,15 @@ impl App {
     }
 
     fn save(&mut self) {
-        let contents = self.entries.iter().map(|e| e.to_nss("")).collect::<String>();
+        let mut contents = String::new();
+        for (i, entry) in self.entries.iter().enumerate() {
+            let indent = "    ".repeat(entry.depth);
+            contents.push_str(&entry.to_nss(&indent));
+            let next_depth = self.entries.get(i + 1).map_or(0, |next| next.depth);
+            if entry.kind == EntryKind::Menu && next_depth <= entry.depth { contents.push_str(&format!("{}}}\n", indent)); }
+        }
+        let max_depth = self.entries.iter().filter(|entry| entry.kind == EntryKind::Menu).map(|entry| entry.depth).max();
+        if let Some(depth) = max_depth { contents.push_str(&"}\n".repeat(depth + 1)); }
         match fs::write(PathBuf::from(&self.file_path), contents) { Ok(_) => self.status = format!("Saved {} entries", self.entries.len()), Err(e) => self.status = format!("Save failed: {e}") }
     }
 }
@@ -61,12 +69,21 @@ impl eframe::App for App {
         });
         egui::SidePanel::left("entries").resizable(true).default_width(250.0).show(ctx, |ui| {
             ui.heading("Menu entries"); ui.add_space(8.0);
-            ui.horizontal(|ui| { if ui.button("+ Item").clicked() { self.entries.push(Entry { kind: EntryKind::Item, title: "New item".into(), command: String::new(), icon: String::new(), enabled: true }); self.selected = Some(self.entries.len()-1); }
-                if ui.button("+ Menu").clicked() { self.entries.push(Entry { kind: EntryKind::Menu, title: "New menu".into(), command: String::new(), icon: String::new(), enabled: true }); self.selected = Some(self.entries.len()-1); }
-                if ui.button("+ Separator").clicked() { self.entries.push(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true }); self.selected = Some(self.entries.len()-1); } });
+            ui.horizontal(|ui| { if ui.button("+ Item").clicked() { self.entries.push(Entry { kind: EntryKind::Item, title: "New item".into(), command: String::new(), icon: String::new(), enabled: true, depth: 0 }); self.selected = Some(self.entries.len()-1); }
+                if ui.button("+ Menu").clicked() { self.entries.push(Entry { kind: EntryKind::Menu, title: "New menu".into(), command: String::new(), icon: String::new(), enabled: true, depth: 0 }); self.selected = Some(self.entries.len()-1); }
+                if ui.button("+ Separator").clicked() { self.entries.push(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true, depth: 0 }); self.selected = Some(self.entries.len()-1); } });
             ui.separator();
             let mut remove = None;
-            for (i, entry) in self.entries.iter().enumerate() { ui.horizontal(|ui| { let selected = self.selected == Some(i); if ui.selectable_label(selected, entry.label()).clicked() { self.selected = Some(i); } if selected && ui.small_button("×").clicked() { remove = Some(i); } }); }
+            for (i, entry) in self.entries.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(entry.depth as f32 * 18.0);
+                    let marker = match entry.kind { EntryKind::Menu => "▾", EntryKind::Item => "◻", EntryKind::Separator => "─" };
+                    let icon = if entry.icon.trim().is_empty() { "" } else { "  ◈" };
+                    let selected = self.selected == Some(i);
+                    if ui.selectable_label(selected, format!("{marker} {}{}", entry.label(), icon)).clicked() { self.selected = Some(i); }
+                    if selected && ui.small_button("×").clicked() { remove = Some(i); }
+                });
+            }
             if let Some(i) = remove { self.entries.remove(i); self.selected = self.entries.len().checked_sub(1); }
         });
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -100,17 +117,21 @@ impl eframe::App for App {
 }
 
 fn parse_nss(contents: &str) -> Vec<Entry> {
-    contents.lines().filter_map(|line| {
-        let line = line.trim();
-        if line.starts_with("separator") { return Some(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true }); }
-        if line.starts_with("item(") {
-            return Some(Entry { kind: EntryKind::Item, title: attr(line, "title"), command: attr(line, "command"), icon: attr(line, "image"), enabled: attr(line, "enabled") != "0" });
+    let mut entries = Vec::new();
+    let mut depth = 0usize;
+    for raw in contents.lines() {
+        let line = raw.trim();
+        if line.starts_with('}') { depth = depth.saturating_sub(1); continue; }
+        if line.starts_with("separator") {
+            entries.push(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true, depth });
+        } else if line.starts_with("item(") {
+            entries.push(Entry { kind: EntryKind::Item, title: attr(line, "title"), command: attr(line, "command"), icon: attr(line, "image"), enabled: attr(line, "enabled") != "0", depth });
+        } else if line.starts_with("menu(") {
+            entries.push(Entry { kind: EntryKind::Menu, title: attr(line, "title"), command: String::new(), icon: attr(line, "image"), enabled: true, depth });
+            if line.contains('{') { depth += 1; }
         }
-        if line.starts_with("menu(") {
-            return Some(Entry { kind: EntryKind::Menu, title: attr(line, "title"), command: String::new(), icon: attr(line, "image"), enabled: true });
-        }
-        None
-    }).collect()
+    }
+    entries
 }
 
 fn attr(line: &str, name: &str) -> String {
