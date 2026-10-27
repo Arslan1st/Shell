@@ -27,11 +27,27 @@ struct App {
 }
 
 impl Default for App {
-    fn default() -> Self { Self { entries: vec![Entry { kind: EntryKind::Item, title: "Open in Terminal".into(), command: "wt.exe -d \"%sel.path\"".into(), icon: "terminal".into(), enabled: true }], selected: Some(0), file_path: "../src/bin/imports/gui.nss".into(), status: "Ready".into() } }
+    fn default() -> Self {
+        let mut app = Self { entries: Vec::new(), selected: None, file_path: "../src/bin/imports/gui.nss".into(), status: "Ready".into() };
+        app.load();
+        app
+    }
 }
 
 impl App {
     fn selected_mut(&mut self) -> Option<&mut Entry> { self.selected.and_then(|i| self.entries.get_mut(i)) }
+
+    fn load(&mut self) {
+        match fs::read_to_string(PathBuf::from(&self.file_path)) {
+            Ok(contents) => {
+                self.entries = parse_nss(&contents);
+                self.selected = if self.entries.is_empty() { None } else { Some(0) };
+                self.status = format!("Loaded {} entries", self.entries.len());
+            }
+            Err(e) => self.status = format!("Load failed: {e}"),
+        }
+    }
+
     fn save(&mut self) {
         let contents = self.entries.iter().map(|e| e.to_nss("")).collect::<String>();
         match fs::write(PathBuf::from(&self.file_path), contents) { Ok(_) => self.status = format!("Saved {} entries", self.entries.len()), Err(e) => self.status = format!("Save failed: {e}") }
@@ -62,9 +78,44 @@ impl eframe::App for App {
                 if entry.kind == EntryKind::Item { ui.add_space(8.0); ui.label("Command"); ui.add(egui::TextEdit::multiline(&mut entry.command).desired_rows(4).hint_text("Example: wt.exe -d %sel.path")); ui.checkbox(&mut entry.enabled, "Enabled"); }
                 ui.separator(); ui.label("Preview"); ui.code(entry.to_nss(""));
             } else { ui.colored_label(egui::Color32::GRAY, "Select an entry or add one from the left."); }
-            ui.add_space(20.0); ui.separator(); ui.label("Configuration file"); ui.horizontal(|ui| { ui.add(egui::TextEdit::singleline(&mut self.file_path).desired_width(450.0)); if ui.button("Save").clicked() { self.save(); } }); ui.colored_label(egui::Color32::GRAY, &self.status);
+            ui.add_space(20.0); ui.separator(); ui.label("Configuration file"); ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.file_path).desired_width(450.0));
+                if ui.button("Load .nss").clicked() { self.load(); }
+                if ui.button("Save").clicked() { self.save(); }
+            });
+            ui.colored_label(egui::Color32::GRAY, "Enter a relative or absolute .nss path, then load it. Saving overwrites that file.");
+            ui.colored_label(egui::Color32::GRAY, &self.status);
         });
     }
+}
+
+fn parse_nss(contents: &str) -> Vec<Entry> {
+    contents.lines().filter_map(|line| {
+        let line = line.trim();
+        if line.starts_with("separator") { return Some(Entry { kind: EntryKind::Separator, title: String::new(), command: String::new(), icon: String::new(), enabled: true }); }
+        if line.starts_with("item(") {
+            return Some(Entry { kind: EntryKind::Item, title: attr(line, "title"), command: attr(line, "command"), icon: attr(line, "image"), enabled: attr(line, "enabled") != "0" });
+        }
+        if line.starts_with("menu(") {
+            return Some(Entry { kind: EntryKind::Menu, title: attr(line, "title"), command: String::new(), icon: attr(line, "image"), enabled: true });
+        }
+        None
+    }).collect()
+}
+
+fn attr(line: &str, name: &str) -> String {
+    let marker = format!("{name} = '");
+    let Some(start) = line.find(&marker) else { return String::new() };
+    let rest = &line[start + marker.len()..];
+    let mut value = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped { value.push(ch); escaped = false; continue; }
+        if ch == '\\' { escaped = true; continue; }
+        if ch == '\'' { break; }
+        value.push(ch);
+    }
+    value
 }
 
 fn main() -> eframe::Result<()> {
