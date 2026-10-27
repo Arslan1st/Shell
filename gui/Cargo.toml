@@ -7,3 +7,10 @@ description = "GUI editor for Shell context-menu entries"
 [dependencies]
 eframe = "0.29"
 rfd = "0.15"
+
+[profile.release]
+strip = true
+opt-level = "z"  # Optimize for size (or 's')
+lto = true       # Link-Time Optimization
+codegen-units = 1
+panic = "abort"  # Removes panic unwinding code
