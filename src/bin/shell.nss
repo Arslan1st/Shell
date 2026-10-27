@@ -1,4 +1,4 @@
-﻿settings
+settings
 {
 	priority=1
 	exclude.where = !process.is_explorer
@@ -34,3 +34,4 @@ import 'imports/file-manage.nss'
 import 'imports/develop.nss'
 import 'imports/goto.nss'
 import 'imports/taskbar.nss'
+import 'imports/gui.nss'
