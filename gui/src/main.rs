@@ -79,11 +79,21 @@ impl eframe::App for App {
                 ui.separator(); ui.label("Preview"); ui.code(entry.to_nss(""));
             } else { ui.colored_label(egui::Color32::GRAY, "Select an entry or add one from the left."); }
             ui.add_space(20.0); ui.separator(); ui.label("Configuration file"); ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.file_path).desired_width(450.0));
-                if ui.button("Load .nss").clicked() { self.load(); }
+                ui.add(egui::TextEdit::singleline(&mut self.file_path).desired_width(360.0));
+                if ui.button("Open .nss…").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Nilesoft Shell files", &["nss"])
+                        .add_filter("All files", &["*"])
+                        .pick_file()
+                    {
+                        self.file_path = path.display().to_string();
+                        self.load();
+                    }
+                }
+                if ui.button("Reload").clicked() { self.load(); }
                 if ui.button("Save").clicked() { self.save(); }
             });
-            ui.colored_label(egui::Color32::GRAY, "Enter a relative or absolute .nss path, then load it. Saving overwrites that file.");
+            ui.colored_label(egui::Color32::GRAY, "Use Open .nss to choose any existing file. Saving overwrites the selected file.");
             ui.colored_label(egui::Color32::GRAY, &self.status);
         });
     }
@@ -104,18 +114,36 @@ fn parse_nss(contents: &str) -> Vec<Entry> {
 }
 
 fn attr(line: &str, name: &str) -> String {
-    let marker = format!("{name} = '");
-    let Some(start) = line.find(&marker) else { return String::new() };
-    let rest = &line[start + marker.len()..];
-    let mut value = String::new();
-    let mut escaped = false;
-    for ch in rest.chars() {
-        if escaped { value.push(ch); escaped = false; continue; }
-        if ch == '\\' { escaped = true; continue; }
-        if ch == '\'' { break; }
-        value.push(ch);
+    // NSS accepts both `name=value` and `name = value`, with single, double,
+    // backtick, or unquoted values. Scan tokens instead of requiring one exact
+    // formatting style so existing files load correctly.
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b'(' || bytes[index] == b',') { index += 1; }
+        let key_start = index;
+        while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') { index += 1; }
+        if key_start == index { index += 1; continue; }
+        let key = &line[key_start..index];
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() { index += 1; }
+        if key != name || index >= bytes.len() || bytes[index] != b'=' { continue; }
+        index += 1;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() { index += 1; }
+        if index >= bytes.len() { return String::new(); }
+        let quote = match bytes[index] { b'\'' | b'"' | b'`' => Some(bytes[index]), _ => None };
+        if quote.is_some() { index += 1; }
+        let mut value = String::new();
+        let mut escaped = false;
+        while index < bytes.len() {
+            let ch = bytes[index] as char;
+            if escaped { value.push(ch); escaped = false; index += 1; continue; }
+            if ch == '\\' && quote.is_some() { escaped = true; index += 1; continue; }
+            if quote == Some(bytes[index]) || (quote.is_none() && (ch.is_ascii_whitespace() || ch == ')' || ch == ',')) { break; }
+            value.push(ch); index += 1;
+        }
+        return value;
     }
-    value
+    String::new()
 }
 
 fn main() -> eframe::Result<()> {

@@ -6,3 +6,4 @@ description = "GUI editor for Shell context-menu entries"
 
 [dependencies]
 eframe = "0.29"
+rfd = "0.15"
